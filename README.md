@@ -17,5 +17,7 @@ It's important to not mix up the two certificates, and when generated to safe th
 Data is lost when you loose the key used to initially encrypt the data.
 
 Keys are generated with the scrypt method from the PyCryptodrome module (https://pycryptodome.readthedocs.io/en/latest/src/protocol/kdf.html#scrypt)
+    
     `scrypt(pwd, iv, key_len=32, N=2**18, r=8, p=1)`
+
 Strength of the keys and even runtime to generate the key depends on the Parameter `N=2**18`, which is good enough for testing purposes to be set between `17` (a good key) and `20` (a strong key).
