@@ -25,6 +25,7 @@ except OSError:
 
 crt_in   = open(sys.argv[1], 'r')  # open the crt file...
 jwe_out  = open(path + "/jweResponse", 'w') # create the output file file for jwe... 
+iv = get_random_bytes(32)  # Generate IV
 
 def create_header(uuid): # Create the header information {"alg":"RSA--OAEP","enc":"A256GCM","kid":"46E3CD56-3880-4389-A6CB-38CCB22AC441"}
     header = '{"alg":"RSA--OAEP","enc":"A256GCM","kid":"' + str(uuid) + '"}'
@@ -51,8 +52,8 @@ else: cek = gen_key('cek')
 if(len(sys.argv)>=5): dek = read_key(4, 'dek')
 else: dek = gen_key('dek')
 
-rsa = RSA.importKey(open(sys.argv[1]).read()) # import the public key from certificate
-cek_cipher = PKCS1_OAEP.new(rsa)  # define the cipher
+rsa = RSA.import_key(open(sys.argv[1]).read()) # import the public key from certificate
+cek_cipher = PKCS1_OAEP.new(rsa.publickey())  # define the cipher
 enc_cek = cek_cipher.encrypt(cek) # encrypt the cek with public key
 
 dek_cipher = AES.new(cek, AES.MODE_GCM)  # Create a cipher object from cek in AES GCM Mode
@@ -64,7 +65,7 @@ uniq_uuid =  uuid.uuid4() # create a unique uuid
 #build the deployable json
 response_json = {}
 response_json['kid'] = str(uniq_uuid)
-response_json['jwe'] = url64.encode(create_header(uniq_uuid)) + "." + url64.encode(enc_cek) + "." + url64.encode(get_random_bytes(32)) + "." + url64.encode(enc_dek) +  "." + url64.encode(tag)
+response_json['jwe'] = url64.encode(create_header(uniq_uuid)) + "." + url64.encode(enc_cek) + "." + url64.encode(iv) + "." + url64.encode(enc_dek) +  "." + url64.encode(tag)
 json_data = json.dumps(response_json)
 jwe_out.write(json_data)
 
