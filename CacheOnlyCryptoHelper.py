@@ -1,74 +1,101 @@
-#***************************************************************************#
-# Author: Heinz Ebensperger                                                 #
-# Usage: CacheOnlyCryptoHelper.py {certificate-file} {relative output-path} #
-# This scrips helps to build the key cascade required to run a              #
-# Salesforce Cache only environment.                                        #
-#***************************************************************************#
+#********************************************************************************#
+# Author: Heinz Ebensperger                                                      #
+# Date: 06.03.2021                                                               #
+#                                                                                #
+# Usage: CacheOnlyCryptoHelper.py {certificate-file} {relative output-path}      #
+#                                                                                #
+# Optionally you can also provide the CEK and DEK if you have them already       #
+# Usage:                                                                         #
+# CacheOnlyCryptoHelper.py {certificate-file} {relative output-path} {cek} {dek} #
+#                                                                                #
+#                                                                                #
+# Salesforce Cache only environment.                                             #
+#********************************************************************************#
 
-from Crypto.Random       import get_random_bytes
-from Crypto.Cipher       import AES, PKCS1_OAEP
-from Crypto.PublicKey    import RSA
-from Crypto.Protocol.KDF import scrypt
-from pathlib             import Path
+#from Crypto.Protocol.KDF import scrypt
+from pathlib       import Path
+from cryptography  import x509
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers    import (Cipher, algorithms, modes)
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+from cryptography.hazmat.primitives.asymmetric import (rsa, padding)
 
-import OpenSSL.crypto
-import string, os, sys, binascii, random, url64, uuid, json
+import string, os, sys, uuid, json, shutil, url64
 
 # Open files 
-try:
-    path = sys.argv[2]
+path = sys.argv[2]
+if os.path.exists(path) and os.path.isdir(path):
+    print('Directory alreday exists, next step is deleting and recreating!')
+    proceed = input('Do you want to proceed (y/N)') or 'N'
+    if (proceed=='y' or proceed=='Y'):
+        shutil.rmtree(path)
+        os.mkdir(path)
+    else:
+        sys.exit()    
+else:
+    print('Creating directory!')
     os.mkdir(path)
-except OSError:
-    print("Creation of the directory %s failed" % path)
-    print("Possible reason directory 'already exists', or you don't have 'required permissions'.")
-    sys.exit("Please double check the aforemention and try again")
 
-crt_in   = open(sys.argv[1], 'r')  # open the crt file...
+crt   = open(sys.argv[1], 'rb').read()  # open the crt file...
 jwe_out  = open(path + "/jweResponse", 'w') # create the output file file for jwe... 
-iv = get_random_bytes(32)  # Generate IV
+#tag_out  = open(path + "/tag.out", 'wb') # file to store the tag for later verification
+#nonce_out  = open(path + "/nonce.out", 'wb') # file to store the nonce for later verification
 
-def create_header(uuid): # Create the header information {"alg":"RSA--OAEP","enc":"A256GCM","kid":"46E3CD56-3880-4389-A6CB-38CCB22AC441"}
-    header = '{"alg":"RSA--OAEP","enc":"A256GCM","kid":"' + str(uuid) + '"}'
+cert = x509.load_pem_x509_certificate(crt)
+public_key = cert.public_key()
+uniq_uuid =  uuid.uuid4() # create a unique uuid
+
+def create_header(u_uuid): # Create the header information {"alg":"RSA--OAEP","enc":"A256GCM","kid":"46E3CD56-3880-4389-A6CB-38CCB22AC441"}
+    header = '{"alg":"RSA-OAEP","enc":"A256GCM","kid":"' + str(u_uuid) + '"}'
     return header
 
-def gen_key(type): # create the cek file and open for binary writing, generate the key and close the stream...
-    key_out  = open(path + "/" + type + ".key", 'wb') 
-    pwd = get_random_bytes(16)
-    iv = get_random_bytes(32)  # Generate IV
-    key = scrypt(pwd, iv, key_len=32, N=2**18, r=8, p=1)  # Generate a key using the password and IV
-    print("Generated Key " + type + ":: " + str(key))
+def generate_key(type):
+    key_out  = open(path + "/" + type + ".key", 'wb')     
+    salt = os.urandom(16)
+    pwd = os.urandom(32)
+    kdf = Scrypt(salt=salt, length=32, n=2**18, r=8, p=1)
+    key = kdf.derive(pwd)
     key_out.write(key)
     key_out.close()
     return key
 
+def encrypt(key, plainkey):
+    # Generate a random 96-bit IV.
+    iv = os.urandom(12)
+    # Construct an AES-GCM Cipher object with the given key and a randomly generated IV.
+    encryptor = Cipher(algorithms.AES(key),modes.GCM(iv),).encryptor()
+    # Encrypt the plaintext and get the associated ciphertext.
+    encrypted_key = encryptor.update(plainkey) + encryptor.finalize()
+    return (iv, encrypted_key, encryptor.tag)    
+
 def read_key(index, type):
     key =  open(sys.argv[index], 'rb').read() # open and read the provided key file
-    print("Used Key " + type + ":: " + str(key))
     return key
 
 if(len(sys.argv)>=4): cek = read_key(3, 'cek')
-else: cek = gen_key('cek')
+else: cek = generate_key('cek')
 
 if(len(sys.argv)>=5): dek = read_key(4, 'dek')
-else: dek = gen_key('dek')
+else: dek = generate_key('dek')
 
-rsa = RSA.import_key(open(sys.argv[1]).read()) # import the public key from certificate
-cek_cipher = PKCS1_OAEP.new(rsa.publickey())  # define the cipher
-enc_cek = cek_cipher.encrypt(cek) # encrypt the cek with public key
+enc_cek = public_key.encrypt(cek,padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(),label=None))
 
-dek_cipher = AES.new(cek, AES.MODE_GCM)  # Create a cipher object from cek in AES GCM Mode
-enc_dek = dek_cipher.encrypt(dek) # encrypt the dek key with cek key
-tag = dek_cipher.digest()  # Get the tag for decryption verification
-
-uniq_uuid =  uuid.uuid4() # create a unique uuid
+nonce, enc_dek, tag = encrypt(cek, dek)
 
 #build the deployable json
+header = create_header(uniq_uuid).encode('utf-8')
+response_string = url64.encode(header) + "." + url64.encode(enc_cek) + "." + url64.encode(nonce) + "." + url64.encode(enc_dek) +  "." + url64.encode(tag)
 response_json = {}
 response_json['kid'] = str(uniq_uuid)
-response_json['jwe'] = url64.encode(create_header(uniq_uuid)) + "." + url64.encode(enc_cek) + "." + url64.encode(iv) + "." + url64.encode(enc_dek) +  "." + url64.encode(tag)
-json_data = json.dumps(response_json)
-jwe_out.write(json_data)
+response_json['jwe'] = str(response_string)
 
-# Close all open files
-crt_in.close()
+#write accomodating information
+#tag_out.write(tag)
+#nonce_out.write(nonce)
+
+jwe_out.write(json.dumps(response_json)) #write the jwe response to file
+
+# Close residial open files
 jwe_out.close()
+#tag_out.close()
+#nonce_out.close()
