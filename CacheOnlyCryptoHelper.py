@@ -1,6 +1,6 @@
 #********************************************************************************#
 # Author: Heinz Ebensperger                                                      #
-# Date: 06.03.2021                                                               #
+# Date: 06/03/2021                                                               #
 #                                                                                #
 # Usage: CacheOnlyCryptoHelper.py {certificate-file} {relative output-path}      #
 #                                                                                #
